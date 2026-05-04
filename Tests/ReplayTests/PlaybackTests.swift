@@ -7,7 +7,10 @@ import Testing
 
 @testable import Replay
 
-@Suite("Playback Tests", .serialized)
+// These tests touch global URLProtocol and PlaybackStore state directly.
+// `.serialized` only orders tests inside this suite; `.playbackIsolated`
+// also prevents cross-suite interference with tests using `.replay(...)`.
+@Suite("Playback Tests", .serialized, .playbackIsolated)
 struct PlaybackTests {
     private final class NetworkStubURLProtocol: URLProtocol {
         // Test-only shared state.
