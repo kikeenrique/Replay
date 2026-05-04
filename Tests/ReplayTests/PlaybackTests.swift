@@ -528,6 +528,33 @@ struct PlaybackTests {
 
             #expect(canonical.url == request.url)
         }
+
+        @Test("streaming delegate forwards authentication challenges to URLProtocol client")
+        func streamingDelegateForwardsAuthenticationChallenges() {
+            let client = PlaybackChallengeClient()
+            let request = URLRequest(url: URL(string: "https://example.com")!)
+            let urlProtocol = PlaybackURLProtocol(
+                request: request,
+                cachedResponse: nil,
+                client: client
+            )
+            let delegate = StreamingDelegate()
+            delegate.urlProtocol = urlProtocol
+
+            let session = URLSession(configuration: .ephemeral)
+            let task = session.dataTask(with: request)
+            let challenge = makePlaybackChallenge()
+
+            var disposition: URLSession.AuthChallengeDisposition?
+            delegate.urlSession(session, task: task, didReceive: challenge) {
+                disposition = $0
+                #expect($1 == nil)
+            }
+
+            #expect(client.didReceiveChallenge)
+            #expect(disposition == .cancelAuthenticationChallenge)
+            session.invalidateAndCancel()
+        }
     }
 
     // MARK: - Store HandleRequest Tests
@@ -663,6 +690,68 @@ struct PlaybackTests {
             }
         }
     }
+}
+
+private final class PlaybackChallengeClient: NSObject, URLProtocolClient {
+    var didReceiveChallenge = false
+
+    func urlProtocol(
+        _ protocol: URLProtocol,
+        wasRedirectedTo request: URLRequest,
+        redirectResponse: URLResponse
+    ) {}
+
+    func urlProtocol(_ protocol: URLProtocol, cachedResponseIsValid cachedResponse: CachedURLResponse) {}
+
+    func urlProtocol(
+        _ protocol: URLProtocol,
+        didReceive response: URLResponse,
+        cacheStoragePolicy policy: URLCache.StoragePolicy
+    ) {}
+
+    func urlProtocol(_ protocol: URLProtocol, didLoad data: Data) {}
+
+    func urlProtocolDidFinishLoading(_ protocol: URLProtocol) {}
+
+    func urlProtocol(_ protocol: URLProtocol, didFailWithError error: Error) {}
+
+    func urlProtocol(_ protocol: URLProtocol, didReceive challenge: URLAuthenticationChallenge) {
+        didReceiveChallenge = true
+        challenge.sender?.cancel(challenge)
+    }
+
+    func urlProtocol(_ protocol: URLProtocol, didCancel challenge: URLAuthenticationChallenge) {}
+}
+
+private final class PlaybackChallengeSender: NSObject, URLAuthenticationChallengeSender {
+    func use(_ credential: URLCredential, for challenge: URLAuthenticationChallenge) {}
+
+    func continueWithoutCredential(for challenge: URLAuthenticationChallenge) {}
+
+    func cancel(_ challenge: URLAuthenticationChallenge) {}
+
+    func performDefaultHandling(for challenge: URLAuthenticationChallenge) {}
+
+    func rejectProtectionSpaceAndContinue(with challenge: URLAuthenticationChallenge) {}
+}
+
+private func makePlaybackChallenge() -> URLAuthenticationChallenge {
+    let protectionSpace = URLProtectionSpace(
+        host: "example.com",
+        port: 443,
+        protocol: "https",
+        realm: nil,
+        authenticationMethod: NSURLAuthenticationMethodServerTrust
+    )
+
+    return URLAuthenticationChallenge(
+        protectionSpace: protectionSpace,
+        proposedCredential: nil,
+        previousFailureCount: 0,
+        failureResponse: nil,
+        error: nil,
+        sender: PlaybackChallengeSender()
+    )
 }
 
 // MARK: - Test Helpers
