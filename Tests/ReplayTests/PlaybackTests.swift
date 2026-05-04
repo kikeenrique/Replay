@@ -692,7 +692,7 @@ struct PlaybackTests {
     }
 }
 
-private final class PlaybackChallengeClient: NSObject, URLProtocolClient {
+private final class PlaybackChallengeClient: NSObject, URLProtocolClient, @unchecked Sendable {
     var didReceiveChallenge = false
 
     func urlProtocol(
@@ -741,7 +741,7 @@ private func makePlaybackChallenge() -> URLAuthenticationChallenge {
         port: 443,
         protocol: "https",
         realm: nil,
-        authenticationMethod: NSURLAuthenticationMethodServerTrust
+        authenticationMethod: NSURLAuthenticationMethodDefault
     )
 
     return URLAuthenticationChallenge(
