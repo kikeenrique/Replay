@@ -243,8 +243,8 @@ public final class PlaybackURLProtocol: URLProtocol, @unchecked Sendable {
                     // Use a delegate-based approach for proper cancellation support
                     let delegate = StreamingDelegate()
                     // The streaming URLSession delegate only knows about URLSession callbacks.
-                    // Keep a back-reference to the PlaybackURLProtocol so authentication
-                    // challenges can be forwarded to the URLProtocol client that started this load.
+                    // Keep a back-reference to the PlaybackURLProtocol
+                    // so authentication challenges can be forwarded to the URLProtocol client that started this load.
                     delegate.urlProtocol = urlProtocol
                     let config = URLSessionConfiguration.ephemeral
                     config.timeoutIntervalForRequest = .infinity
@@ -408,8 +408,8 @@ final class StreamingDelegate: NSObject, URLSessionDataDelegate, @unchecked Send
         }
 
         // URLProtocol clients answer challenges through URLAuthenticationChallengeSender,
-        // while URLSession expects a completion handler. Rebuild the challenge with a
-        // sender that bridges the client's eventual decision back to URLSession.
+        // while URLSession expects a completion handler.
+        // Rebuild the challenge with a sender that bridges the client's eventual decision back to URLSession.
         let forwardedChallenge = URLAuthenticationChallenge(
             protectionSpace: challenge.protectionSpace,
             proposedCredential: challenge.proposedCredential,
