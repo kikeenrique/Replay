@@ -668,6 +668,9 @@ public actor PlaybackStore {
     private func makeEntry(from stub: Stub) throws -> HAR.Entry {
         var request = URLRequest(url: stub.url)
         request.httpMethod = stub.method.rawValue
+        if !stub.requestHeaders.isEmpty {
+            request.allHTTPHeaderFields = stub.requestHeaders
+        }
 
         guard
             let response = HTTPURLResponse(

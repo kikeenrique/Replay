@@ -40,6 +40,11 @@ public enum Matcher: Sendable {
     /// Matches the values of the specified HTTP request headers.
     ///
     /// Header name lookup uses `URLRequest.value(forHTTPHeaderField:)` semantics.
+    ///
+    /// - Important: For stub-based playback (`.replay(stubs:)`),
+    ///   a `Stub` has no expected request headers by default —
+    ///   set them via `Stub.matchingRequestHeaders(_:)`,
+    ///   or this matcher will only match requests where the named headers are absent.
     case headers([String])
 
     /// Matches the raw HTTP body bytes (`URLRequest.httpBody`).

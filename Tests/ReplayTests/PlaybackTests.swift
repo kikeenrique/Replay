@@ -643,6 +643,61 @@ struct PlaybackTests {
             #expect(String(data: data2, encoding: .utf8) == "Second")
         }
 
+        @Test("headers matcher rejects a stub with no expected request headers set")
+        func headersMatcherWithoutExpectedHeadersRejectsRequest() async throws {
+            let store = PlaybackStore()
+            let url = URL(string: "https://api.example.com/reports")!
+            let stubs: [Stub] = [.get(url.absoluteString, 200, [:], { "OK" })]
+
+            try await store.configure(
+                PlaybackConfiguration(
+                    source: .stubs(stubs),
+                    matchers: [.method, .url, .headers(["Accept"])]
+                )
+            )
+
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.setValue("text/csv", forHTTPHeaderField: "Accept")
+
+            // Without `matchingRequestHeaders`,
+            // the stub's synthesized candidate request has no headers,
+            // so `.headers(["Accept"])` never matches a request that actually sets Accept.
+            await #expect(throws: Error.self) {
+                try await store.handleRequest(request)
+            }
+        }
+
+        @Test("headers matcher matches a stub via matchingRequestHeaders")
+        func headersMatcherWithMatchingRequestHeaders() async throws {
+            let store = PlaybackStore()
+            let url = URL(string: "https://api.example.com/reports")!
+            let stubs: [Stub] = [
+                .get(url.absoluteString, 200, [:], { "OK" })
+                    .matchingRequestHeaders(["Accept": "text/csv"])
+            ]
+
+            try await store.configure(
+                PlaybackConfiguration(
+                    source: .stubs(stubs),
+                    matchers: [.method, .url, .headers(["Accept"])]
+                )
+            )
+
+            var matching = URLRequest(url: url)
+            matching.httpMethod = "GET"
+            matching.setValue("text/csv", forHTTPHeaderField: "Accept")
+            let (_, data) = try await store.handleRequest(matching)
+            #expect(String(data: data, encoding: .utf8) == "OK")
+
+            var mismatched = URLRequest(url: url)
+            mismatched.httpMethod = "GET"
+            mismatched.setValue("application/json", forHTTPHeaderField: "Accept")
+            await #expect(throws: Error.self) {
+                try await store.handleRequest(mismatched)
+            }
+        }
+
         @Test("strict mode throws for unmatched requests")
         func strictModeThrowsForUnmatched() async throws {
             let store = PlaybackStore()

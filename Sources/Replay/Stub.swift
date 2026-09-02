@@ -79,6 +79,20 @@ public struct Stub: Sendable {
     public var headers: [String: String]
     public var body: Data?
 
+    /// Expected request headers,
+    /// used by `Matcher.headers([...])` during stub-based playback.
+    ///
+    /// Unlike ``headers``,
+    /// which becomes the *response* headers returned to the caller,
+    /// these are compared against the incoming request's headers.
+    /// A stub with no `requestHeaders` set (the default) is a no-op for `.headers` matching —
+    /// the incoming request's header values must be `nil` to match,
+    /// which is rarely useful.
+    /// Set this via ``matchingRequestHeaders(_:)``
+    /// when you need to assert that a specific request header
+    /// (e.g. `Accept`, `Prefer`) was sent with a specific value.
+    public var requestHeaders: [String: String] = [:]
+
     /// Initialize a stub with a specific method and URL.
     /// - Parameters:
     ///   - method: HTTP method (default: .get).
@@ -448,5 +462,23 @@ extension Stub {
             headers: headers,
             body: nil,
         )
+    }
+}
+
+// MARK: - Request Header Matching
+
+extension Stub {
+    /// Returns a copy of this stub with expected request headers set,
+    /// for use with `Matcher.headers([...])`.
+    ///
+    /// - Parameters:
+    ///   - headers: The request header names and values to match against the incoming request.
+    ///     Only the header names you pass to `Matcher.headers([...])` are actually compared,
+    ///     so it's safe to include more headers here than you match on.
+    /// - Returns: A copy of the stub with `requestHeaders` set.
+    public func matchingRequestHeaders(_ headers: [String: String]) -> Stub {
+        var copy = self
+        copy.requestHeaders = headers
+        return copy
     }
 }
