@@ -396,10 +396,28 @@ final class StreamingDelegate: NSObject, URLSessionDataDelegate, @unchecked Send
         dataContinuation?.yield(data)
     }
 
+    // Connection-level challenges (TLS server trust, client certificates) arrive through
+    // this session-level callback rather than the task-level one below. Both must be
+    // forwarded, otherwise trust decisions silently fall back to default handling.
+    func urlSession(
+        _ session: URLSession,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        forward(challenge, completionHandler: completionHandler)
+    }
+
     func urlSession(
         _ session: URLSession,
         task: URLSessionTask,
         didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        forward(challenge, completionHandler: completionHandler)
+    }
+
+    private func forward(
+        _ challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
         guard let urlProtocol, let client = urlProtocol.client else {
@@ -446,7 +464,9 @@ private final class PlaybackChallengeForwarder: NSObject, URLAuthenticationChall
     }
 
     func continueWithoutCredential(for challenge: URLAuthenticationChallenge) {
-        complete(.useCredential, nil)
+        // "Continue without a credential" maps to URLSession's default handling,
+        // not to `.useCredential` with a nil credential.
+        complete(.performDefaultHandling, nil)
     }
 
     func cancel(_ challenge: URLAuthenticationChallenge) {
