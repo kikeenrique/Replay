@@ -848,8 +848,21 @@ enum PlaybackChallengeDecision: CaseIterable {
         case .useCredential: sender.use(credential, for: challenge)
         case .continueWithoutCredential: sender.continueWithoutCredential(for: challenge)
         case .cancel: sender.cancel(challenge)
-        case .performDefaultHandling: sender.performDefaultHandling?(for: challenge)
-        case .rejectProtectionSpace: sender.rejectProtectionSpaceAndContinue?(with: challenge)
+        case .performDefaultHandling:
+            // `performDefaultHandling` and `rejectProtectionSpaceAndContinue` are optional
+            // `@objc` requirements on Darwin, but required protocol methods in
+            // swift-corelibs-foundation.
+            #if canImport(Darwin)
+                sender.performDefaultHandling?(for: challenge)
+            #else
+                sender.performDefaultHandling(for: challenge)
+            #endif
+        case .rejectProtectionSpace:
+            #if canImport(Darwin)
+                sender.rejectProtectionSpaceAndContinue?(with: challenge)
+            #else
+                sender.rejectProtectionSpaceAndContinue(with: challenge)
+            #endif
         }
     }
 }
