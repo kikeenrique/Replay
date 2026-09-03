@@ -242,6 +242,10 @@ public final class PlaybackURLProtocol: URLProtocol, @unchecked Sendable {
 
                     // Use a delegate-based approach for proper cancellation support
                     let delegate = StreamingDelegate()
+                    // The streaming URLSession delegate only knows about URLSession callbacks.
+                    // Keep a back-reference to the PlaybackURLProtocol
+                    // so authentication challenges can be forwarded to the URLProtocol client that started this load.
+                    delegate.urlProtocol = urlProtocol
                     let config = URLSessionConfiguration.ephemeral
                     config.timeoutIntervalForRequest = .infinity
                     config.timeoutIntervalForResource = .infinity
@@ -355,9 +359,11 @@ public final class PlaybackURLProtocol: URLProtocol, @unchecked Sendable {
 // MARK: - Streaming Delegate
 
 /// A delegate that bridges URLSession callbacks to async streams for SSE support.
-private final class StreamingDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+final class StreamingDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private var responseContinuation: CheckedContinuation<HTTPURLResponse, Error>?
     private var dataContinuation: AsyncThrowingStream<Data, Error>.Continuation?
+    // Held weakly because URLProtocol owns the streaming task that owns this delegate.
+    weak var urlProtocol: PlaybackURLProtocol?
 
     var dataStream: AsyncThrowingStream<Data, Error> {
         if let stream = _dataStream { return stream }
@@ -390,6 +396,49 @@ private final class StreamingDelegate: NSObject, URLSessionDataDelegate, @unchec
         dataContinuation?.yield(data)
     }
 
+    // Connection-level challenges (TLS server trust, client certificates) arrive through
+    // this session-level callback rather than the task-level one below. Both must be
+    // forwarded, otherwise trust decisions silently fall back to default handling.
+    func urlSession(
+        _ session: URLSession,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        forward(challenge, completionHandler: completionHandler)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        forward(challenge, completionHandler: completionHandler)
+    }
+
+    private func forward(
+        _ challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        guard let urlProtocol, let client = urlProtocol.client else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+
+        // URLProtocol clients answer challenges through URLAuthenticationChallengeSender,
+        // while URLSession expects a completion handler.
+        // Rebuild the challenge with a sender that bridges the client's eventual decision back to URLSession.
+        let forwardedChallenge = URLAuthenticationChallenge(
+            protectionSpace: challenge.protectionSpace,
+            proposedCredential: challenge.proposedCredential,
+            previousFailureCount: challenge.previousFailureCount,
+            failureResponse: challenge.failureResponse,
+            error: challenge.error,
+            sender: PlaybackChallengeForwarder(completionHandler: completionHandler)
+        )
+        client.urlProtocol(urlProtocol, didReceive: forwardedChallenge)
+    }
+
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         if let error = error {
             responseContinuation?.resume(throwing: error)
@@ -398,6 +447,49 @@ private final class StreamingDelegate: NSObject, URLSessionDataDelegate, @unchec
         } else {
             dataContinuation?.finish()
         }
+    }
+}
+
+/// Bridges URLProtocolClient challenge decisions back into URLSession's challenge completion handler.
+private final class PlaybackChallengeForwarder: NSObject, URLAuthenticationChallengeSender, @unchecked Sendable {
+    private let lock = NSLock()
+    private var completionHandler: ((URLSession.AuthChallengeDisposition, URLCredential?) -> Void)?
+
+    init(completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        self.completionHandler = completionHandler
+    }
+
+    func use(_ credential: URLCredential, for challenge: URLAuthenticationChallenge) {
+        complete(.useCredential, credential)
+    }
+
+    func continueWithoutCredential(for challenge: URLAuthenticationChallenge) {
+        // "Continue without a credential" maps to URLSession's default handling,
+        // not to `.useCredential` with a nil credential.
+        complete(.performDefaultHandling, nil)
+    }
+
+    func cancel(_ challenge: URLAuthenticationChallenge) {
+        complete(.cancelAuthenticationChallenge, nil)
+    }
+
+    func performDefaultHandling(for challenge: URLAuthenticationChallenge) {
+        complete(.performDefaultHandling, nil)
+    }
+
+    func rejectProtectionSpaceAndContinue(with challenge: URLAuthenticationChallenge) {
+        complete(.rejectProtectionSpace, nil)
+    }
+
+    private func complete(_ disposition: URLSession.AuthChallengeDisposition, _ credential: URLCredential?) {
+        // A challenge sender may receive more than one callback from a defensive client;
+        // URLSession completion handlers must only be invoked once.
+        lock.lock()
+        let handler = completionHandler
+        completionHandler = nil
+        lock.unlock()
+
+        handler?(disposition, credential)
     }
 }
 

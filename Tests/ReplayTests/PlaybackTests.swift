@@ -7,7 +7,10 @@ import Testing
 
 @testable import Replay
 
-@Suite("Playback Tests", .serialized)
+// These tests touch global URLProtocol and PlaybackStore state directly.
+// `.serialized` only orders tests inside this suite;
+// `.playbackIsolated` also prevents cross-suite interference with tests using `.replay(...)`.
+@Suite("Playback Tests", .serialized, .playbackIsolated)
 struct PlaybackTests {
     private final class NetworkStubURLProtocol: URLProtocol {
         // Test-only shared state.
@@ -528,6 +531,95 @@ struct PlaybackTests {
 
             #expect(canonical.url == request.url)
         }
+
+        @Test(
+            "streaming delegate forwards task-level challenges and maps every client decision",
+            arguments: PlaybackChallengeDecision.allCases
+        )
+        func streamingDelegateForwardsTaskChallenges(decision: PlaybackChallengeDecision) {
+            let credential = URLCredential(user: "user", password: "secret", persistence: .forSession)
+            let client = PlaybackChallengeClient { challenge in
+                decision.respond(to: challenge, credential: credential)
+            }
+            let request = URLRequest(url: URL(string: "https://example.com")!)
+            let urlProtocol = PlaybackURLProtocol(
+                request: request,
+                cachedResponse: nil,
+                client: client
+            )
+            let delegate = StreamingDelegate()
+            delegate.urlProtocol = urlProtocol
+
+            let session = URLSession(configuration: .ephemeral)
+            defer { session.invalidateAndCancel() }
+            let task = session.dataTask(with: request)
+            let challenge = makePlaybackChallenge()
+
+            var disposition: URLSession.AuthChallengeDisposition?
+            var receivedCredential: URLCredential?
+            var completionCount = 0
+            delegate.urlSession(session, task: task, didReceive: challenge) {
+                completionCount += 1
+                disposition = $0
+                receivedCredential = $1
+            }
+
+            #expect(client.didReceiveChallenge)
+            #expect(completionCount == 1)
+            #expect(disposition == decision.expectedDisposition)
+            if decision == .useCredential {
+                #expect(receivedCredential === credential)
+            } else {
+                #expect(receivedCredential == nil)
+            }
+        }
+
+        @Test("streaming delegate forwards session-level (connection) challenges to URLProtocol client")
+        func streamingDelegateForwardsSessionChallenges() {
+            let credential = URLCredential(user: "user", password: "secret", persistence: .forSession)
+            let client = PlaybackChallengeClient { challenge in
+                challenge.sender?.use(credential, for: challenge)
+            }
+            let request = URLRequest(url: URL(string: "https://example.com")!)
+            let urlProtocol = PlaybackURLProtocol(
+                request: request,
+                cachedResponse: nil,
+                client: client
+            )
+            let delegate = StreamingDelegate()
+            delegate.urlProtocol = urlProtocol
+
+            let session = URLSession(configuration: .ephemeral)
+            defer { session.invalidateAndCancel() }
+            let challenge = makePlaybackChallenge()
+
+            var disposition: URLSession.AuthChallengeDisposition?
+            var receivedCredential: URLCredential?
+            delegate.urlSession(session, didReceive: challenge) {
+                disposition = $0
+                receivedCredential = $1
+            }
+
+            #expect(client.didReceiveChallenge)
+            #expect(disposition == .useCredential)
+            #expect(receivedCredential === credential)
+        }
+
+        @Test("streaming delegate performs default handling when no URLProtocol client is attached")
+        func streamingDelegateDefaultsWithoutClient() {
+            let delegate = StreamingDelegate()
+            let session = URLSession(configuration: .ephemeral)
+            defer { session.invalidateAndCancel() }
+            let challenge = makePlaybackChallenge()
+
+            var disposition: URLSession.AuthChallengeDisposition?
+            delegate.urlSession(session, didReceive: challenge) {
+                disposition = $0
+                #expect($1 == nil)
+            }
+
+            #expect(disposition == .performDefaultHandling)
+        }
     }
 
     // MARK: - Store HandleRequest Tests
@@ -729,6 +821,104 @@ struct PlaybackTests {
             }
         }
     }
+}
+
+/// Every decision a `URLProtocolClient` can make through `URLAuthenticationChallengeSender`,
+/// paired with the `URLSession` disposition the streaming bridge must produce for it.
+enum PlaybackChallengeDecision: CaseIterable {
+    case useCredential
+    case continueWithoutCredential
+    case cancel
+    case performDefaultHandling
+    case rejectProtectionSpace
+
+    var expectedDisposition: URLSession.AuthChallengeDisposition {
+        switch self {
+        case .useCredential: return .useCredential
+        case .continueWithoutCredential: return .performDefaultHandling
+        case .cancel: return .cancelAuthenticationChallenge
+        case .performDefaultHandling: return .performDefaultHandling
+        case .rejectProtectionSpace: return .rejectProtectionSpace
+        }
+    }
+
+    func respond(to challenge: URLAuthenticationChallenge, credential: URLCredential) {
+        guard let sender = challenge.sender else { return }
+        switch self {
+        case .useCredential: sender.use(credential, for: challenge)
+        case .continueWithoutCredential: sender.continueWithoutCredential(for: challenge)
+        case .cancel: sender.cancel(challenge)
+        case .performDefaultHandling: sender.performDefaultHandling?(for: challenge)
+        case .rejectProtectionSpace: sender.rejectProtectionSpaceAndContinue?(with: challenge)
+        }
+    }
+}
+
+private final class PlaybackChallengeClient: NSObject, URLProtocolClient, @unchecked Sendable {
+    var didReceiveChallenge = false
+    private let respond: (URLAuthenticationChallenge) -> Void
+
+    init(respond: @escaping (URLAuthenticationChallenge) -> Void) {
+        self.respond = respond
+    }
+
+    func urlProtocol(
+        _ protocol: URLProtocol,
+        wasRedirectedTo request: URLRequest,
+        redirectResponse: URLResponse
+    ) {}
+
+    func urlProtocol(_ protocol: URLProtocol, cachedResponseIsValid cachedResponse: CachedURLResponse) {}
+
+    func urlProtocol(
+        _ protocol: URLProtocol,
+        didReceive response: URLResponse,
+        cacheStoragePolicy policy: URLCache.StoragePolicy
+    ) {}
+
+    func urlProtocol(_ protocol: URLProtocol, didLoad data: Data) {}
+
+    func urlProtocolDidFinishLoading(_ protocol: URLProtocol) {}
+
+    func urlProtocol(_ protocol: URLProtocol, didFailWithError error: Error) {}
+
+    func urlProtocol(_ protocol: URLProtocol, didReceive challenge: URLAuthenticationChallenge) {
+        didReceiveChallenge = true
+        respond(challenge)
+    }
+
+    func urlProtocol(_ protocol: URLProtocol, didCancel challenge: URLAuthenticationChallenge) {}
+}
+
+private final class PlaybackChallengeSender: NSObject, URLAuthenticationChallengeSender {
+    func use(_ credential: URLCredential, for challenge: URLAuthenticationChallenge) {}
+
+    func continueWithoutCredential(for challenge: URLAuthenticationChallenge) {}
+
+    func cancel(_ challenge: URLAuthenticationChallenge) {}
+
+    func performDefaultHandling(for challenge: URLAuthenticationChallenge) {}
+
+    func rejectProtectionSpaceAndContinue(with challenge: URLAuthenticationChallenge) {}
+}
+
+private func makePlaybackChallenge() -> URLAuthenticationChallenge {
+    let protectionSpace = URLProtectionSpace(
+        host: "example.com",
+        port: 443,
+        protocol: "https",
+        realm: nil,
+        authenticationMethod: NSURLAuthenticationMethodDefault
+    )
+
+    return URLAuthenticationChallenge(
+        protectionSpace: protectionSpace,
+        proposedCredential: nil,
+        previousFailureCount: 0,
+        failureResponse: nil,
+        error: nil,
+        sender: PlaybackChallengeSender()
+    )
 }
 
 // MARK: - Test Helpers
