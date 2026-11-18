@@ -987,3 +987,25 @@ private func makeTestEntryFor(url: URL, status: Int, body: String) -> HAR.Entry 
         timings: HAR.Timings(send: 10, wait: 80, receive: 10)
     )
 }
+
+// MARK: - Download Tasks
+
+@Test(
+    "download task returns a file or throws, never traps",
+    .replay(stubs: [.get("https://example.com/file", 200, ["Content-Type": "text/plain"], { "Body" })])
+)
+func downloadTaskDoesNotTrap() async throws {
+    let request = URLRequest(url: URL(string: "https://example.com/file")!)
+
+    #if canImport(FoundationNetworking)
+        // FoundationNetworking cannot turn a URLProtocol body into a download file,
+        // so Replay fails the task instead of letting download(for:) trap.
+        await #expect(throws: ReplayError.self) {
+            _ = try await Replay.session.download(for: request)
+        }
+    #else
+        let (location, response) = try await Replay.session.download(for: request)
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+        #expect(try String(contentsOf: location, encoding: .utf8) == "Body")
+    #endif
+}

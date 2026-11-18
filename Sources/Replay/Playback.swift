@@ -201,6 +201,25 @@ public final class PlaybackURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     public override func startLoading() {
+        #if canImport(FoundationNetworking)
+            // FoundationNetworking only writes a download task's temporary file for its own
+            // protocols. A body delivered by a custom URLProtocol finishes the download with
+            // a nil location and no error, and `URLSession.download(for:)` force-unwraps it,
+            // crashing the test process. Fail the task instead, so the call throws.
+            // https://github.com/swiftlang/swift-corelibs-foundation/issues/5465
+            if task is URLSessionDownloadTask {
+                client?.urlProtocol(
+                    self,
+                    didFailWithError: ReplayError.invalidRequest(
+                        "Download tasks are not supported by Replay on Linux "
+                            + "(FoundationNetworking cannot deliver a URLProtocol body as a file). "
+                            + "Use data(for:) and write the data to a file instead."
+                    )
+                )
+                return
+            }
+        #endif
+
         let mutableRequest = (request as NSURLRequest).mutableCopy() as! NSMutableURLRequest
         URLProtocol.setProperty(true, forKey: Self.handledKey, in: mutableRequest)
         let markedRequest = mutableRequest as URLRequest
